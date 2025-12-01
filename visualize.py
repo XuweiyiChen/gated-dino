@@ -61,7 +61,7 @@ def visualize(args, model, visual_dataset):
 
         # Get original image
         original_img = cv2.imread(str(visual_dataset.files[d]))
-        
+
         # Generate norm map
         t = visual_tokens[-1].detach().cpu()
         h, w, c = t.shape

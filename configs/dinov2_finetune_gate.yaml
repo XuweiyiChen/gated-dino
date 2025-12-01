@@ -1,0 +1,103 @@
+# DINOv2 SSL Finetuning Configuration
+# Usage: python lightly_train_dinov2.py --config configs/dinov2_finetune.yaml
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  name: dinov2_vitg14                # Options: dinov2_vits14, dinov2_vitb14, dinov2_vitl14, dinov2_vitg14
+  checkpoint: /anvil/scratch/x-xchen8/gated-dino/checkpoints/dinov2_vitg14_pretrain.pth
+  ibot_separate_head: false          # Whether to use separate heads for iBOT
+
+# =============================================================================
+# Gated Attention Configuration (Qwen3-style)
+# =============================================================================
+gate:
+  enabled: true                      # Enable gated attention
+  headwise: true                    # One gate scalar per attention head
+  elementwise: false                  # One gate value per dimension (more expressive, overrides headwise)
+  use_mem_eff: true                  # Use memory-efficient attention (xformers/SDPA)
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  train_dir: /anvil/scratch/x-xchen8/gated-dino/data/imagenet-1k/train
+  val_dir: null                      # Set to validation path for KNN eval, e.g., /path/to/imagenet-1k/val
+  batch_size: 8                      # Increased for H100
+  num_workers: 8                     # Increased for better data loading
+  # Augmentation settings (must be divisible by patch_size=14)
+  global_crop_size: 224
+  global_crop_scale: [0.32, 1.0]
+  local_crop_size: 98                # 98/14=7, not 96!
+  local_crop_scale: [0.05, 0.32]
+  n_local_views: 8
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  epochs: 50
+  learning_rate: 1.0e-5              # Lower LR for finetuning
+  backbone_lr_scale: 0.1             # Backbone LR = learning_rate * backbone_lr_scale
+  weight_decay_start: 0.04
+  weight_decay_end: 0.4
+  freeze_backbone_epochs: 0          # Freeze backbone for first N epochs (warmup heads)
+  
+  # EMA (Exponential Moving Average) for teacher
+  ema_momentum_start: 0.996
+  ema_momentum_end: 1.0
+  
+  # Teacher temperature warmup
+  teacher_temp_start: 0.04
+  teacher_temp_end: 0.07
+  teacher_temp_warmup_epochs: 30
+
+# =============================================================================
+# Distributed Training Configuration
+# =============================================================================
+distributed:
+  accelerator: gpu
+  devices: auto                      # "auto", 1, 2, 4, or [0,1,2,3]
+  strategy: ddp_find_unused_parameters_true
+  sync_batchnorm: true
+  precision: "bf16-mixed"            # bf16-mixed is REQUIRED for Flash Attention on H100
+
+# =============================================================================
+# Checkpointing Configuration
+# =============================================================================
+checkpoint:
+  dir: /anvil/scratch/x-xchen8/gated-dino/checkpoints
+  save_every_n_epochs: 5
+  save_top_k: -1                     # -1 = save all, 3 = keep best 3
+  save_last: true
+
+# =============================================================================
+# KNN Evaluation Configuration
+# =============================================================================
+knn:
+  enabled: false                     # Set to true and provide val_dir
+  k: 20                              # Number of neighbors
+  t: 0.07                            # Temperature
+  num_classes: 1000
+  max_train_samples: 50000           # Limit train samples for speed
+
+# =============================================================================
+# Logging Configuration (Wandb)
+# =============================================================================
+logging:
+  wandb:
+    enabled: true
+    project: gated-dino
+    name: null                       # Auto-generated if null
+    offline: false
+  log_every_n_steps: 10
+
+# =============================================================================
+# Experiment Metadata
+# =============================================================================
+experiment:
+  name: dinov2_vitg14_finetune
+  seed: 42
+  notes: "DINOv2 ViT-G/14 SSL finetuning on ImageNet-1K"
+

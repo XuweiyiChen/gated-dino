@@ -9,3 +9,8 @@ Vit-RGTS
 __pycache__/
 imagenet-1k/
 visualize_output/
+lightly
+useless
+lightning_logs
+wheels
+wandb
