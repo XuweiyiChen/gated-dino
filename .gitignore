@@ -15,3 +15,5 @@ lightning_logs
 wheels
 wandb
 experiments
+inspect_checkpoint.py
+inspect_checkpoint_light.py

@@ -69,9 +69,9 @@ mkdir -p {exp_dir}/results/visualizations
 
     if mode == "train":
         script += f"""
-# Run training with PyTorch Lightning (handles DDP internally)
+# Run training with torchrun (spawns {args.gpus} processes for {args.gpus} GPUs)
 # Batch size is PER GPU, effective = batch_size * {args.gpus}
-python lightly_train_dinov2.py --config configs/{config_name}
+torchrun --standalone --nproc_per_node={args.gpus} lightly_train_dinov2.py --config configs/{config_name}
 
 echo "=============================================="
 echo "Training completed at: $(date)"
@@ -79,7 +79,7 @@ echo "=============================================="
 """
     else:  # eval mode
         script += f"""
-# Run evaluation/visualization
+# Run evaluation/visualization (single GPU)
 python visualize.py \\
     --checkpoint {exp_dir}/checkpoints/{args.model_name}_finetuned_final.pth \\
     --model {args.model_name} \\
@@ -154,33 +154,57 @@ def main():
         description="Launch experiment with organized directory structure"
     )
     parser.add_argument("exp_name", help="Experiment name")
-    parser.add_argument("config_file", help="Config file path (relative to project root)")
+    parser.add_argument(
+        "config_file", help="Config file path (relative to project root)"
+    )
 
     # Resource configuration - updated for correct HPC
-    parser.add_argument("--gpus", type=int, default=1, help="Number of GPUs (default: 1)")
+    parser.add_argument(
+        "--gpus", type=int, default=1, help="Number of GPUs (default: 1)"
+    )
     parser.add_argument(
         "--time", default="48:00:00", help="Time limit for training (default: 48:00:00)"
     )
-    parser.add_argument("--partition", default="ai", help="SLURM partition (default: ai)")
     parser.add_argument(
-        "--account", default="nairr250073-ai", help="SLURM account (default: nairr250073-ai)"
+        "--partition", default="ai", help="SLURM partition (default: ai)"
+    )
+    parser.add_argument(
+        "--account",
+        default="nairr250073-ai",
+        help="SLURM account (default: nairr250073-ai)",
     )
     parser.add_argument(
         "--email",
         default="xuweic@email.virginia.edu",
         help="Email for notifications",
     )
-    parser.add_argument("--mem", default="128GB", help="Memory per node (default: 128GB)")
-    parser.add_argument("--cpus-per-task", type=int, default=64, help="CPUs per task (default: 64)")
+    parser.add_argument(
+        "--mem", default="128GB", help="Memory per node (default: 128GB)"
+    )
+    parser.add_argument(
+        "--cpus-per-task", type=int, default=64, help="CPUs per task (default: 64)"
+    )
 
     # Training overrides
-    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size (PER GPU)")
-    parser.add_argument("--epochs", type=int, default=None, help="Override number of epochs")
-    parser.add_argument("--learning-rate", type=float, default=None, help="Override learning rate")
-    parser.add_argument("--model-name", default="dinov2_vitg14", help="Model name (default: dinov2_vitg14)")
+    parser.add_argument(
+        "--batch-size", type=int, default=None, help="Override batch size (PER GPU)"
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=None, help="Override number of epochs"
+    )
+    parser.add_argument(
+        "--learning-rate", type=float, default=None, help="Override learning rate"
+    )
+    parser.add_argument(
+        "--model-name",
+        default="dinov2_vitg14",
+        help="Model name (default: dinov2_vitg14)",
+    )
 
     # Flags
-    parser.add_argument("--force", action="store_true", help="Overwrite existing experiment")
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing experiment"
+    )
 
     args = parser.parse_args()
 
@@ -265,9 +289,30 @@ def main():
 
     # Update checkpoint directory
     lines = config_content.split("\n")
+    in_checkpoint_section = False
     for i, line in enumerate(lines):
-        # Update checkpoint dir
-        if "dir:" in line and "checkpoint" in lines[max(0, i-5):i+1]:
+        # Track if we're in the checkpoint section
+        if (
+            line.strip().startswith("checkpoint:")
+            and ":" in line
+            and not line.strip().startswith("#")
+        ):
+            in_checkpoint_section = True
+        elif (
+            line.strip()
+            and not line.startswith(" ")
+            and not line.startswith("#")
+            and ":" in line
+        ):
+            # New top-level section started
+            in_checkpoint_section = False
+
+        # Update checkpoint dir (must be in checkpoint section and have "dir:")
+        if (
+            in_checkpoint_section
+            and "dir:" in line
+            and not line.strip().startswith("#")
+        ):
             lines[i] = f"  dir: {exp_dir}/checkpoints"
         # Update model checkpoint path to use symlink
         if "checkpoint:" in line and "pretrain" in line:
@@ -280,7 +325,9 @@ def main():
                     lines[i] = f"  checkpoint: pretrained_checkpoints/{ckpt_name}"
         # Update batch size if specified
         if args.batch_size and "batch_size:" in line:
-            lines[i] = f"  batch_size: {args.batch_size}                      # PER GPU! ({args.gpus} GPUs x {args.batch_size} = {args.batch_size * args.gpus} effective)"
+            lines[i] = (
+                f"  batch_size: {args.batch_size}                      # PER GPU! ({args.gpus} GPUs x {args.batch_size} = {args.batch_size * args.gpus} effective)"
+            )
         # Update epochs if specified
         if args.epochs and "epochs:" in line:
             lines[i] = f"  epochs: {args.epochs}"
@@ -291,10 +338,10 @@ def main():
         if "devices:" in line:
             lines[i] = f"  devices: {args.gpus}                      # Number of GPUs"
         # Update experiment name
-        if "name:" in line and "experiment" in lines[max(0, i-3):i]:
+        if "name:" in line and "experiment" in lines[max(0, i - 3) : i]:
             lines[i] = f"  name: {args.exp_name}"
         # Update wandb name
-        if "name:" in line and "wandb" in lines[max(0, i-3):i]:
+        if "name:" in line and "wandb" in lines[max(0, i - 3) : i]:
             lines[i] = f"    name: {args.exp_name}"
 
     config_dst = exp_dir / "code" / "configs" / config_name
@@ -305,14 +352,23 @@ def main():
     # Create ALL launch scripts
     print("\nCreating launch scripts...")
     scripts = {}
-    script_configs = [("train", "slurm"), ("train", "local"), ("eval", "slurm"), ("eval", "local")]
+    script_configs = [
+        ("train", "slurm"),
+        ("train", "local"),
+        ("eval", "slurm"),
+        ("eval", "local"),
+    ]
 
     for mode, launch in script_configs:
         script_name = f"{mode}_{launch}.sh"
         if launch == "slurm":
-            scripts[script_name] = create_slurm_script(args, exp_dir, config_name, mode=mode)
+            scripts[script_name] = create_slurm_script(
+                args, exp_dir, config_name, mode=mode
+            )
         else:
-            scripts[script_name] = create_local_script(args, exp_dir, config_name, mode=mode)
+            scripts[script_name] = create_local_script(
+                args, exp_dir, config_name, mode=mode
+            )
 
     # Write all scripts
     for script_name, script_content in scripts.items():
