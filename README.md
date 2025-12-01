@@ -42,6 +42,62 @@ Put ImageNet-1K dataset at `data/imagenet` folder.
 ./visualize.py resources/example.jpg --checkpoint path/to/sinder.pth
 ```
 
+## Gated Attention DINOv2 Finetuning
+
+This repo includes **gated attention** (Qwen3-style) for DINOv2. The gate learns to selectively modulate attention outputs.
+
+### Quick Start (Single GPU)
+
+```bash
+python lightly_train_dinov2.py --config configs/dinov2_finetune_gate.yaml
+```
+
+### Experiment Management (Recommended for Multi-GPU)
+
+Use the experiment launcher for organized, reproducible experiments:
+
+```bash
+# Create experiment with 4 GPUs
+python scripts/launch_experiment.py my_gate_exp configs/dinov2_finetune_gate.yaml \
+    --gpus 4 --time 24:00:00 --batch-size 16
+
+# Launch on SLURM
+cd experiments/my_gate_exp/launch
+sbatch train_slurm.sh
+
+# Or run locally
+./train_local.sh
+
+# Monitor
+tail -f ../log/slurm_*.out
+```
+
+### Configuration
+
+Edit `configs/dinov2_finetune_gate.yaml`:
+
+```yaml
+gate:
+  enabled: true           # Enable gated attention
+  headwise: true          # One gate per attention head (24 gates for ViT-G)
+  elementwise: false      # One gate per dimension (64 gates per head)
+  use_mem_eff: true       # Use xformers/SDPA
+```
+
+### CLI Overrides
+
+```bash
+# Enable gated attention
+python lightly_train_dinov2.py --config configs/dinov2_finetune.yaml --gate-enabled --gate-headwise
+
+# Disable gated attention
+python lightly_train_dinov2.py --config configs/dinov2_finetune_gate.yaml --no-gate
+
+# Multi-GPU with precision
+python lightly_train_dinov2.py --config configs/dinov2_finetune_gate.yaml \
+    --devices 4 --precision bf16-mixed --batch-size 16
+```
+
 ## Distributed SSL finetuning (Lightly)
 
 Use the bundled PyTorch Lightning script to launch DINOv2-style self-supervised training (requires installing Lightly in editable mode first):
@@ -54,7 +110,8 @@ python lightly_train_dinov2.py \
   --epochs 50 \
   --batch-size 64 \
   --accelerator gpu \
-  --devices 8
+  --devices 8 \
+  --precision bf16-mixed
 ```
 
 ## Register Tokens (ViT-RGTS)

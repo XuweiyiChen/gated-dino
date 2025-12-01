@@ -24,8 +24,8 @@ gate:
 data:
   train_dir: /anvil/scratch/x-xchen8/gated-dino/data/imagenet-1k/train
   val_dir: null                      # Set to validation path for KNN eval, e.g., /path/to/imagenet-1k/val
-  batch_size: 8                      # Increased for H100
-  num_workers: 8                     # Increased for better data loading
+  batch_size: 8                      # PER GPU! (4 GPUs x 8 = 32 effective batch size)
+  num_workers: 8                     # Per GPU, for data loading
   # Augmentation settings (must be divisible by patch_size=14)
   global_crop_size: 224
   global_crop_scale: [0.32, 1.0]

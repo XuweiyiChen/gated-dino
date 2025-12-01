@@ -68,8 +68,8 @@ class GateConfig:
 class DataConfig:
     train_dir: str = "data/imagenet/train"
     val_dir: Optional[str] = None
-    batch_size: int = 32
-    num_workers: int = 8
+    batch_size: int = 32  # PER GPU (effective = batch_size * num_gpus)
+    num_workers: int = 8  # Per GPU
     global_crop_size: int = 224
     global_crop_scale: Tuple[float, float] = (0.32, 1.0)
     local_crop_size: int = 98
@@ -98,7 +98,7 @@ class DistributedConfig:
     devices: str = "auto"
     strategy: str = "ddp_find_unused_parameters_true"
     sync_batchnorm: bool = True
-    precision: int = 32
+    precision: str = "bf16-mixed"  # "32", "16", "bf16-mixed", etc.
 
 
 @dataclass
@@ -662,6 +662,7 @@ Examples:
     parser.add_argument("--accelerator", type=str, default=None)
     parser.add_argument("--devices", type=str, default=None)
     parser.add_argument("--strategy", type=str, default=None)
+    parser.add_argument("--precision", type=str, default=None, help="Precision: 32, 16, bf16-mixed")
     parser.add_argument("--freeze-backbone-epochs", type=int, default=None)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--save-every-n-epochs", type=int, default=None)
@@ -672,6 +673,12 @@ Examples:
     parser.add_argument("--knn-k", type=int, default=None)
     parser.add_argument("--knn-t", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    
+    # Gate config overrides
+    parser.add_argument("--gate-enabled", action="store_true", default=None, help="Enable gated attention")
+    parser.add_argument("--no-gate", action="store_true", default=False, help="Disable gated attention")
+    parser.add_argument("--gate-headwise", action="store_true", default=None, help="Use headwise gating")
+    parser.add_argument("--gate-elementwise", action="store_true", default=None, help="Use elementwise gating")
     
     args = parser.parse_args()
     
@@ -706,6 +713,8 @@ Examples:
         config.distributed.devices = args.devices
     if args.strategy is not None:
         config.distributed.strategy = args.strategy
+    if args.precision is not None:
+        config.distributed.precision = args.precision
     if args.freeze_backbone_epochs is not None:
         config.training.freeze_backbone_epochs = args.freeze_backbone_epochs
     if args.checkpoint_dir is not None:
@@ -726,6 +735,18 @@ Examples:
         config.knn.t = args.knn_t
     if args.seed is not None:
         config.experiment.seed = args.seed
+    
+    # Gate config overrides
+    if args.no_gate:
+        config.gate.enabled = False
+    elif args.gate_enabled:
+        config.gate.enabled = True
+    if args.gate_headwise:
+        config.gate.headwise = True
+        config.gate.elementwise = False
+    if args.gate_elementwise:
+        config.gate.elementwise = True
+        config.gate.headwise = False
     
     return config
 
@@ -873,9 +894,22 @@ def main():
         print(f"    - Elementwise: {config.gate.elementwise}")
     print(f"  Train data: {config.data.train_dir}")
     print(f"  Val data: {config.data.val_dir}")
-    print(f"  Batch size: {config.data.batch_size}")
+    print(f"  Batch size (per GPU): {config.data.batch_size}")
+    # Calculate effective batch size
+    num_devices = config.distributed.devices
+    if isinstance(num_devices, str):
+        if num_devices == "auto":
+            import torch
+            num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
+        else:
+            num_devices = int(num_devices)
+    effective_batch = config.data.batch_size * num_devices
+    print(f"  Effective batch size: {effective_batch} ({config.data.batch_size} x {num_devices} GPUs)")
     print(f"  Epochs: {config.training.epochs}")
     print(f"  Learning rate: {config.training.learning_rate}")
+    print(f"  Devices: {config.distributed.devices}")
+    print(f"  Precision: {config.distributed.precision}")
+    print(f"  Strategy: {config.distributed.strategy}")
     print(f"  KNN eval: {config.knn.enabled}")
     print("=" * 60)
     
@@ -947,6 +981,7 @@ def main():
         accelerator=config.distributed.accelerator,
         devices=config.distributed.devices,
         strategy=config.distributed.strategy,
+        precision=config.distributed.precision,
         sync_batchnorm=config.distributed.sync_batchnorm,
         use_distributed_sampler=True,
         logger=logger,
