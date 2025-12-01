@@ -2,3 +2,10 @@
 results
 /data
 visualize/
+env
+checkpoints
+dinov2
+Vit-RGTS
+__pycache__/
+imagenet-1k/
+visualize_output/
