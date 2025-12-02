@@ -135,6 +135,36 @@ model = VitRGTS(
 
 Ensure `einops` is installed (already included in `requirements.txt`).
 
+## Inference with Gated DINOv2
+
+After training, run inference on images:
+
+```bash
+cd /anvil/scratch/x-xchen8/gated-dino
+
+# Basic inference
+python inference_gated.py \
+    --checkpoint experiments/dinov2_vitg14_finetune_gate_v3/checkpoints/last.ckpt \
+    --images /path/to/image1.jpg /path/to/image2.jpg \
+    --output_dir inference_output
+
+# With options
+python inference_gated.py \
+    --checkpoint experiments/dinov2_vitg14_finetune_gate_v3/checkpoints/last.ckpt \
+    --images resources/*.jpg \
+    --output_dir inference_output \
+    --use_teacher \
+    --device cuda
+```
+
+### Outputs
+
+For each image:
+- `{filename}_features.pt` - CLS token + patch tokens (for downstream tasks)
+- `{filename}_norm.png` - Norm visualization (highlights salient regions)
+- `{filename}_pca.png` - PCA visualization (semantic regions)
+- `{filename}_combined.png` - Original | Norm | PCA side-by-side
+
 ## Checkpoints
 
 [Google Drive](https://drive.google.com/file/d/1g0Aq5qXYuMmVrN9-gGwC9ybwlCDFAw-l/view?usp=sharing)

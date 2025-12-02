@@ -184,50 +184,68 @@ def replace_attention_with_gated(
     Returns:
         Modified model with gated attention
     """
-    from .attention import Attention, MemEffAttention
+    # Import both local AND Facebook's DINOv2 attention classes
+    from .attention import Attention as LocalAttention, MemEffAttention as LocalMemEffAttention
+    
+    # Try to import Facebook's DINOv2 attention classes (from torch.hub cache)
+    try:
+        from dinov2.layers.attention import Attention as DINOv2Attention, MemEffAttention as DINOv2MemEffAttention
+        attn_classes = (LocalAttention, LocalMemEffAttention, DINOv2Attention, DINOv2MemEffAttention)
+    except ImportError:
+        attn_classes = (LocalAttention, LocalMemEffAttention)
     
     attn_cls = GatedMemEffAttention if use_mem_eff else GatedAttention
     
+    # Collect modules to replace first (avoid modifying during iteration)
+    modules_to_replace = []
     for name, module in model.named_modules():
-        if isinstance(module, (Attention, MemEffAttention)):
+        if isinstance(module, attn_classes):
             parent_name = ".".join(name.split(".")[:-1])
             attr_name = name.split(".")[-1]
+            modules_to_replace.append((name, module, parent_name, attr_name))
+    
+    print(f"Found {len(modules_to_replace)} attention modules to replace")
+    
+    # Now do the actual replacement
+    for name, old_attn, parent_name, attr_name in modules_to_replace:
+        if parent_name:
+            parent = model.get_submodule(parent_name)
+        else:
+            parent = model
+        
+        dim = old_attn.qkv.in_features
+        num_heads = old_attn.num_heads
+        qkv_bias = old_attn.qkv.bias is not None
+        proj_bias = old_attn.proj.bias is not None
+        
+        new_attn = attn_cls(
+            dim=dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            proj_bias=proj_bias,
+            headwise_gate=headwise_gate,
+            elementwise_gate=elementwise_gate,
+        )
+        
+        with torch.no_grad():
+            new_attn.qkv.weight[:dim * 3] = old_attn.qkv.weight
+            if qkv_bias:
+                new_attn.qkv.bias[:dim * 3] = old_attn.qkv.bias
             
-            if parent_name:
-                parent = model.get_submodule(parent_name)
-            else:
-                parent = model
-            
-            old_attn = module
-            dim = old_attn.qkv.in_features
-            num_heads = old_attn.num_heads
-            qkv_bias = old_attn.qkv.bias is not None
-            proj_bias = old_attn.proj.bias is not None
-            
-            new_attn = attn_cls(
-                dim=dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
-                headwise_gate=headwise_gate,
-                elementwise_gate=elementwise_gate,
-            )
-            
-            with torch.no_grad():
-                new_attn.qkv.weight[:dim * 3] = old_attn.qkv.weight
+            if new_attn.gate_dim > 0:
+                nn.init.zeros_(new_attn.qkv.weight[dim * 3:])
                 if qkv_bias:
-                    new_attn.qkv.bias[:dim * 3] = old_attn.qkv.bias
-                
-                if new_attn.gate_dim > 0:
-                    nn.init.zeros_(new_attn.qkv.weight[dim * 3:])
-                    if qkv_bias:
-                        nn.init.constant_(new_attn.qkv.bias[dim * 3:], 4.0)
-                
-                new_attn.proj.weight.copy_(old_attn.proj.weight)
-                if proj_bias:
-                    new_attn.proj.bias.copy_(old_attn.proj.bias)
+                    nn.init.constant_(new_attn.qkv.bias[dim * 3:], 4.0)
             
-            setattr(parent, attr_name, new_attn)
+            new_attn.proj.weight.copy_(old_attn.proj.weight)
+            if proj_bias:
+                new_attn.proj.bias.copy_(old_attn.proj.bias)
+        
+        setattr(parent, attr_name, new_attn)
+    
+    # Verify replacement worked
+    first_qkv = model.blocks[0].attn.qkv.weight
+    print(f"After replacement - Block 0 QKV shape: {tuple(first_qkv.shape)}")
     
     return model
 

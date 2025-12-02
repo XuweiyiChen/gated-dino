@@ -423,10 +423,28 @@ class DINOv2Lightning(pl.LightningModule):
         ibot_separate_head: bool = False,
         base_lr: float = 1e-4,  # Lower LR for finetuning
         freeze_backbone_epochs: int = 0,  # Optionally freeze backbone initially
-        gate_config: GateConfig = None,  # Gated attention config
+        gate_config: GateConfig = None,  # Gated attention config (for fresh training)
+        gate_config_dict: dict = None,  # For loading from checkpoint
     ) -> None:
         super().__init__()
+        
+        # If gate_config_dict is provided (from checkpoint loading), reconstruct GateConfig
+        if gate_config is None and gate_config_dict is not None:
+            gate_config = GateConfig(**gate_config_dict)
+            print(f"Reconstructed gate_config from checkpoint: {gate_config}")
+        
+        # Convert gate_config to dict for serialization
+        if gate_config is not None:
+            gate_config_dict = {
+                'enabled': gate_config.enabled,
+                'headwise': gate_config.headwise,
+                'elementwise': gate_config.elementwise,
+                'use_mem_eff': gate_config.use_mem_eff,
+            }
+        
+        # Save hyperparameters (gate_config_dict will be saved, not gate_config object)
         self.save_hyperparameters(ignore=["gate_config"])
+        self.gate_config = gate_config  # Store for runtime use
         
         config = DINOV2_CONFIGS.get(model_name, DINOV2_CONFIGS["dinov2_vits14"])
         embed_dim = config["embed_dim"]
