@@ -47,7 +47,23 @@ def load_model(checkpoint_path, use_teacher=False, device='cuda'):
     """Load the gated DINOv2 model from checkpoint."""
     print(f"Loading checkpoint: {checkpoint_path}")
     
-    model = DINOv2Lightning.load_from_checkpoint(checkpoint_path)
+    # Load checkpoint manually to handle the pretrained_checkpoint_path issue
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    hparams = ckpt.get('hyper_parameters', {})
+    
+    # Override checkpoint_path to None so it doesn't try to load pretrained weights
+    # (the weights are already in the checkpoint's state_dict)
+    hparams['checkpoint_path'] = None
+    
+    print(f"Model: {hparams.get('model_name', 'unknown')}")
+    if 'gate_config_dict' in hparams:
+        print(f"Gate config: {hparams['gate_config_dict']}")
+    
+    # Create model with modified hparams
+    model = DINOv2Lightning(**hparams)
+    
+    # Load state dict from checkpoint
+    model.load_state_dict(ckpt['state_dict'])
     model.eval()
     model.to(device)
     
@@ -72,18 +88,40 @@ def load_model(checkpoint_path, use_teacher=False, device='cuda'):
     return backbone, has_gates
 
 
-def get_transform(image_size=518):
-    """Get preprocessing transform."""
+class ResizeToMultiple:
+    """Resize image so both dimensions are multiples of patch_size, preserving aspect ratio."""
+    def __init__(self, short_side=518, patch_size=14):
+        self.short_side = short_side
+        self.patch_size = patch_size
+    
+    def __call__(self, img):
+        w, h = img.size
+        # Resize so short side = short_side
+        if h < w:
+            new_h = self.short_side
+            new_w = int(w * new_h / h)
+        else:
+            new_w = self.short_side
+            new_h = int(h * new_w / w)
+        
+        # Round to nearest multiple of patch_size
+        new_h = (new_h // self.patch_size) * self.patch_size
+        new_w = (new_w // self.patch_size) * self.patch_size
+        
+        return img.resize((new_w, new_h), Image.BICUBIC)
+
+
+def get_transform(image_size=518, patch_size=14):
+    """Get preprocessing transform - resize short side, ensure divisible by patch_size (like visualize.py)."""
     return transforms.Compose([
-        transforms.Resize(image_size, interpolation=transforms.InterpolationMode.BICUBIC),
-        transforms.CenterCrop(image_size),
+        ResizeToMultiple(short_side=image_size, patch_size=patch_size),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
 
 @torch.no_grad()
-def extract_features(model, image_tensor, device='cuda'):
+def extract_features(model, image_tensor, device='cuda', patch_size=14):
     """Extract features from image.
     
     Returns:
@@ -93,24 +131,34 @@ def extract_features(model, image_tensor, device='cuda'):
     """
     image_tensor = image_tensor.unsqueeze(0).to(device)
     
-    # Forward through model
-    x = model.patch_embed(image_tensor)
-    x = x + model.pos_embed
-    cls_token = model.cls_token.expand(x.shape[0], -1, -1)
-    x = torch.cat([cls_token, x], dim=1)
+    # Calculate grid size from image dimensions
+    _, img_h, img_w = image_tensor.shape[1:]  # C, H, W -> get H, W
+    grid_h = img_h // patch_size
+    grid_w = img_w // patch_size
     
-    for block in model.blocks:
-        x = block(x)
+    # Use model's forward_features directly (handles all the details)
+    features = model.forward_features(image_tensor)
     
-    x = model.norm(x)
+    # DINOv2 returns dict with different feature types
+    if isinstance(features, dict):
+        patch_tokens = features.get('x_norm_patchtokens', None)
+        cls_token = features.get('x_norm_clstoken', None)
+        if patch_tokens is None or cls_token is None:
+            # Fallback to prenorm features
+            x_full = features.get('x_prenorm', features.get('x'))
+            cls_token = x_full[:, 0]
+            patch_tokens = x_full[:, 1:]
+    else:
+        cls_token = features[:, 0]
+        patch_tokens = features[:, 1:]
     
-    cls_token = x[:, 0]  # [1, embed_dim]
-    patch_tokens = x[:, 1:]  # [1, num_patches, embed_dim]
+    # Ensure correct shapes: cls_token [1, embed_dim], patch_tokens [1, num_patches, embed_dim]
+    if cls_token.dim() == 1:
+        cls_token = cls_token.unsqueeze(0)
     
-    # Reshape to 2D
+    # Reshape to 2D (H, W may differ for non-square images)
     B, N, C = patch_tokens.shape
-    H = W = int(N ** 0.5)
-    patch_tokens_2d = patch_tokens.reshape(B, H, W, C).squeeze(0)  # [H, W, C]
+    patch_tokens_2d = patch_tokens.reshape(B, grid_h, grid_w, C).squeeze(0)  # [H, W, C]
     
     return cls_token, patch_tokens, patch_tokens_2d
 
@@ -184,9 +232,8 @@ def main():
         }
         torch.save(features, os.path.join(args.output_dir, f'{filename}_features.pt'))
         
-        # Create visualizations
+        # Create visualizations (like visualize.py - preserve aspect ratio)
         original = cv2.imread(img_path)
-        original = cv2.resize(original, (args.image_size, args.image_size))
         
         norm_map = create_norm_map(patch_tokens_2d)
         
@@ -196,10 +243,14 @@ def main():
             print("  sklearn not available, skipping PCA visualization")
             pca_map = np.zeros_like(norm_map)
         
-        # Resize all to same size
-        h = norm_map.shape[0]
-        original_resized = cv2.resize(original, (h, h))
-        pca_resized = cv2.resize(pca_map, (h, h))
+        # Resize all to same HEIGHT for concatenation (preserve aspect ratio like visualize.py)
+        target_height = norm_map.shape[0]
+        original_resized = cv2.resize(original, 
+                                     (int(original.shape[1] * target_height / original.shape[0]), 
+                                      target_height))
+        pca_resized = cv2.resize(pca_map, 
+                                (int(pca_map.shape[1] * target_height / pca_map.shape[0]), 
+                                 target_height))
         
         # Concatenate: Original | Norm | PCA
         combined = np.hstack([original_resized, norm_map, pca_resized])

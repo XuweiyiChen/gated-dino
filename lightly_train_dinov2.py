@@ -59,9 +59,11 @@ class ModelConfig:
 class GateConfig:
     """Gated attention configuration (Qwen3-style)."""
     enabled: bool = False
+    version: int = 1             # V1=fused, V2=split (allows freezing backbone)
     headwise: bool = False       # One gate scalar per attention head
     elementwise: bool = True     # One gate value per dimension (overrides headwise)
     use_mem_eff: bool = True     # Use memory-efficient attention
+    freeze_backbone: bool = False  # If True, freeze all except gate layers (V2 only)
 
 
 @dataclass
@@ -107,6 +109,7 @@ class CheckpointConfig:
     save_every_n_epochs: int = 5
     save_top_k: int = -1
     save_last: bool = True
+    filename: str = None  # If None, use default pattern
 
 
 @dataclass
@@ -173,9 +176,11 @@ def load_config(config_path: str) -> Config:
         g = yaml_config["gate"]
         config.gate = GateConfig(
             enabled=g.get("enabled", config.gate.enabled),
+            version=g.get("version", config.gate.version),
             headwise=g.get("headwise", config.gate.headwise),
             elementwise=g.get("elementwise", config.gate.elementwise),
             use_mem_eff=g.get("use_mem_eff", config.gate.use_mem_eff),
+            freeze_backbone=g.get("freeze_backbone", config.gate.freeze_backbone),
         )
     
     # Parse data config
@@ -226,9 +231,10 @@ def load_config(config_path: str) -> Config:
         ckpt = yaml_config["checkpoint"]
         config.checkpoint = CheckpointConfig(
             dir=ckpt.get("dir", config.checkpoint.dir),
-            save_every_n_epochs=ckpt.get("save_every_n_epochs", config.checkpoint.save_every_n_epochs),
+            save_every_n_epochs=ckpt.get("every_n_epochs", ckpt.get("save_every_n_epochs", config.checkpoint.save_every_n_epochs)),
             save_top_k=ckpt.get("save_top_k", config.checkpoint.save_top_k),
             save_last=ckpt.get("save_last", config.checkpoint.save_last),
+            filename=ckpt.get("filename", config.checkpoint.filename),
         )
     
     # Parse KNN config
@@ -338,20 +344,49 @@ def load_dinov2_backbone(
     
     # Apply gated attention if enabled
     if gate_config is not None and gate_config.enabled:
-        from models.gated_attention import replace_attention_with_gated
-        print(f"Replacing attention with gated attention (headwise={gate_config.headwise}, elementwise={gate_config.elementwise})")
-        model = replace_attention_with_gated(
-            model,
-            headwise_gate=gate_config.headwise,
-            elementwise_gate=gate_config.elementwise,
-            use_mem_eff=gate_config.use_mem_eff,
-        )
-        # Count new parameters
+        version = getattr(gate_config, 'version', 1)
+        print(f"Replacing attention with gated attention V{version} (headwise={gate_config.headwise}, elementwise={gate_config.elementwise})")
+        
+        if version == 2:
+            from models.gated_attention_v2 import replace_attention_with_gated_v2
+            model = replace_attention_with_gated_v2(
+                model,
+                headwise_gate=gate_config.headwise,
+                elementwise_gate=gate_config.elementwise,
+                use_mem_eff=gate_config.use_mem_eff,
+            )
+        else:
+            from models.gated_attention import replace_attention_with_gated
+            model = replace_attention_with_gated(
+                model,
+                headwise_gate=gate_config.headwise,
+                elementwise_gate=gate_config.elementwise,
+                use_mem_eff=gate_config.use_mem_eff,
+            )
+        
+        # Freeze backbone if requested (V2 only)
+        if getattr(gate_config, 'freeze_backbone', False):
+            if version != 2:
+                print("WARNING: freeze_backbone requires version=2, ignoring")
+            else:
+                print("Freezing backbone, training only gate layers...")
+                for name, param in model.named_parameters():
+                    if ".gate." in name:
+                        param.requires_grad = True
+                    else:
+                        param.requires_grad = False
+                
+                # Count trainable params
+                trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                total = sum(p.numel() for p in model.parameters())
+                print(f"Trainable parameters: {trainable:,} / {total:,} ({100*trainable/total:.4f}%)")
+        
+        # Count gate parameters
         gate_params = sum(
             p.numel() for n, p in model.named_parameters() 
-            if "qkv" in n and p.requires_grad
+            if (".gate." in n or "qkv" in n) and p.requires_grad
         )
-        print(f"Added gated attention. QKV parameters: {gate_params:,}")
+        print(f"Gate-related trainable parameters: {gate_params:,}")
     
     return model
 
@@ -437,9 +472,11 @@ class DINOv2Lightning(pl.LightningModule):
         if gate_config is not None:
             gate_config_dict = {
                 'enabled': gate_config.enabled,
+                'version': getattr(gate_config, 'version', 1),
                 'headwise': gate_config.headwise,
                 'elementwise': gate_config.elementwise,
                 'use_mem_eff': gate_config.use_mem_eff,
+                'freeze_backbone': getattr(gate_config, 'freeze_backbone', False),
             }
         
         # Save hyperparameters (gate_config_dict will be saved, not gate_config object)
@@ -958,11 +995,13 @@ def main():
     train_dataloader = create_train_dataloader(config)
     
     # Setup callbacks
+    # Use custom filename if provided, otherwise default (avoid / in filename)
+    ckpt_filename = config.checkpoint.filename or f"{config.model.name}_epoch{{epoch:02d}}"
     callbacks = [
         # Save checkpoint every N epochs
         ModelCheckpoint(
             dirpath=config.checkpoint.dir,
-            filename=f"{config.model.name}_epoch{{epoch:02d}}_loss{{train/loss:.2f}}",
+            filename=ckpt_filename,
             save_top_k=config.checkpoint.save_top_k,
             every_n_epochs=config.checkpoint.save_every_n_epochs,
             save_last=config.checkpoint.save_last,

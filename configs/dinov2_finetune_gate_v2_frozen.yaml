@@ -1,0 +1,59 @@
+# DINOv2 Gated Attention V2 Config - Gates Only Training (Backbone Frozen)
+# 
+# This config trains ONLY the gate layers while freezing all pretrained weights.
+# Goal: Learn to suppress attention sinks without modifying original features.
+
+model:
+  name: dinov2_vitg14                # ViT-g/14 architecture
+  checkpoint: null                   # Load from torch.hub (pretrained)
+  ibot_separate_head: false
+
+# Gate configuration - V2 split architecture
+gate:
+  enabled: true
+  version: 2                         # Use V2 (split QKV and Gate layers)
+  headwise: true                     # One gate per attention head
+  elementwise: false
+  use_mem_eff: true
+  freeze_backbone: true              # FREEZE everything except gates
+
+data:
+  train_dir: /anvil/scratch/x-xchen8/gated-dino/data/imagenet-1k/train
+  val_dir: /anvil/scratch/x-xchen8/gated-dino/data/imagenet-1k/val
+  batch_size: 16                      # PER GPU
+  num_workers: 8
+  global_crop_size: 224
+  local_crop_size: 98                 # Must be divisible by patch_size (14)
+  n_local_crops: 8
+
+training:
+  epochs: 10
+  base_lr: 1e-3                      # Higher LR for gates (few params)
+  freeze_backbone_epochs: 0          # N/A since we use gate.freeze_backbone
+
+distributed:
+  devices: 4
+  strategy: ddp
+  precision: bf16-mixed
+
+checkpoint:
+  dir: experiments/dinov2_vitg14_finetune_gate_v2_frozen/checkpoints
+  save_top_k: -1                     # Save all checkpoints
+  every_n_epochs: 1                  # Save every epoch
+  filename: "dinov2_vitg14_gate_v2_epoch{epoch:02d}"
+
+knn:
+  enabled: false                     # Disable for faster training
+
+wandb:
+  enabled: true
+  project: gated-dino
+  name: dinov2_vitg14_finetune_gate_v2_frozen
+
+logging:
+  log_every_n_steps: 50
+
+experiment:
+  name: dinov2_vitg14_finetune_gate_v2_frozen
+  seed: 42
+

@@ -11,6 +11,11 @@ from .gated_attention import (
     GatedMemEffAttention,
     replace_attention_with_gated,
 )
+from .gated_attention_v2 import (
+    GatedAttentionV2,
+    GatedMemEffAttentionV2,
+    replace_attention_with_gated_v2,
+)
 
 __all__ = [
     # Vanilla DINOv2 layers
@@ -23,8 +28,12 @@ __all__ = [
     "SwiGLUFFNFused",
     "LayerScale",
     "DropPath",
-    # Gated attention (Qwen3-style)
+    # Gated attention V1 (Qwen3-style, fused)
     "GatedAttention",
     "GatedMemEffAttention",
     "replace_attention_with_gated",
+    # Gated attention V2 (split, allows freezing backbone)
+    "GatedAttentionV2",
+    "GatedMemEffAttentionV2",
+    "replace_attention_with_gated_v2",
 ]
