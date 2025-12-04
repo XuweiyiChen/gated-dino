@@ -168,7 +168,13 @@ def create_norm_map(patch_tokens_2d, patch_size=14):
     t = patch_tokens_2d.cpu()
     h, w, c = t.shape
     norm = t.norm(dim=-1)
-    norm = ((norm / norm.max()) * 255).byte().numpy()
+    
+    # Robust normalization: Clip outliers at 99th percentile to fix contrast
+    # This prevents one single "sink" pixel from making the whole image black
+    p99 = torch.quantile(norm, 0.99)
+    norm_clipped = torch.clamp(norm, max=p99)
+    
+    norm = ((norm_clipped / norm_clipped.max()) * 255).byte().numpy()
     norm_img = Image.fromarray(norm).resize((w * patch_size, h * patch_size), Image.NEAREST)
     norm_colored = cv2.applyColorMap(np.array(norm_img), cv2.COLORMAP_JET)
     return norm_colored
