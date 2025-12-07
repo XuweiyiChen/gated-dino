@@ -165,6 +165,44 @@ For each image:
 - `{filename}_pca.png` - PCA visualization (semantic regions)
 - `{filename}_combined.png` - Original | Norm | PCA side-by-side
 
+## Linear Probing Evaluation (ImageNet-1K)
+
+Evaluate feature quality using linear probing following DINOv2's official protocol.
+
+### Quick Test (1 epoch)
+
+```bash
+# Gated DINOv2
+python eval/linear_probe/linear_probe.py \
+    --checkpoint experiments/dinov2_vitg14_finetune_gate_v2_frozen/checkpoints/dinov2_vitg14_gate_v2_epochepoch=04.ckpt \
+    --train-dir data/imagenet-1k/train \
+    --val-dir data/imagenet-1k/val \
+    --output-dir ./linear_probe_output_gated \
+    --epochs 1 --epoch-length 500 --batch-size 64
+
+# Vanilla DINOv2 (baseline)
+python eval/linear_probe/linear_probe.py \
+    --checkpoint experiments/dinov2_vitg14_finetune/checkpoints/dinov2_vitg14_epochepoch=02_losstrain/loss=0.60.ckpt \
+    --train-dir data/imagenet-1k/train \
+    --val-dir data/imagenet-1k/val \
+    --output-dir ./linear_probe_output_vanilla \
+    --epochs 1 --epoch-length 500 --batch-size 64
+```
+
+### Full Evaluation (DINOv2 protocol)
+
+Uses DINOv2's official hyperparameters:
+- 10 epochs, 1250 iterations per epoch
+- Learning rate grid search: [1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1]
+- Last blocks: [1, 4], with/without average pooling
+- Total: 52 classifier configurations
+
+```bash
+# Submit SLURM job for full evaluation
+cd experiments/dinov2_vitg14_finetune_gate_v2_frozen/launch
+sbatch linear_probe_slurm.sh
+```
+
 ## Checkpoints
 
 [Google Drive](https://drive.google.com/file/d/1g0Aq5qXYuMmVrN9-gGwC9ybwlCDFAw-l/view?usp=sharing)

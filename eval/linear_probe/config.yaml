@@ -1,0 +1,38 @@
+# Linear probing configuration for DINOv2
+# Based on DINOv2's original hyperparameters for ImageNet-1k linear probe
+
+# Model configuration
+model:
+  arch: vit_giant2
+  patch_size: 14
+  ffn_layer: swiglufused
+
+# Data configuration
+data:
+  train_dir: "/anvil/scratch/x-xchen8/gated-dino/data/imagenet-1k/train"
+  val_dir: "/anvil/scratch/x-xchen8/gated-dino/data/imagenet-1k/val"
+  num_classes: 1000
+
+# Training configuration
+training:
+  epochs: 10
+  batch_size: 128  # Per GPU
+  num_workers: 8
+  epoch_length: 1250  # Number of iterations per epoch
+  
+# Evaluation configuration
+eval:
+  eval_period_iterations: 1250  # Evaluate every epoch
+  n_last_blocks: [1, 4]  # Use last 1 or 4 blocks
+  use_avgpool: [false, true]  # With/without average pooling of patch tokens
+  
+# Hyperparameter grid search
+hyperparameters:
+  learning_rates: [1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1]
+  # Learning rates are scaled by batch_size * num_gpus / 256.0
+  
+# Output configuration
+output:
+  output_dir: "./linear_probe_output"
+
+
